@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Generate CA
-# openssl genrsa -out ca.key 4096
-# openssl req -x509 -new -sha512 -nodes -key ca.key -days 7307 -out ca.crt -config config/ca.conf
+openssl genrsa -out ca.key 4096
+openssl req -x509 -new -sha512 -nodes -key ca.key -days 7307 -out ca.crt -config config/ca.conf
 
 # Generate CSR
 openssl genrsa -out host.key 4096
