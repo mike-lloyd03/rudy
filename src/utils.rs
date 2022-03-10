@@ -3,6 +3,7 @@ use crate::response::HTTPResponse;
 use bytes::{Buf, BufMut, BytesMut};
 use native_tls::Identity;
 use native_tls::TlsConnector;
+use std::process::exit;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_native_tls::TlsAcceptor;
@@ -104,9 +105,13 @@ pub async fn do_connect_request(req: HTTPRequest, client_socket: &mut TcpStream)
         .write(b"HTTP/1.1 200 OK\r\n\r\n")
         .await
         .unwrap();
+    println!("request: {:?}", req);
     // TLS acceptor initialization
     let der = include_bytes!("keyStore.p12");
-    let cert = Identity::from_pkcs12(der, "foobar").unwrap();
+    let cert = Identity::from_pkcs12(der, "").unwrap_or_else(|e| {
+        eprintln!("{:?}", e);
+        exit(1);
+    });
     let tls_acceptor = TlsAcceptor::from(native_tls::TlsAcceptor::builder(cert).build().unwrap());
     let mut tls_stream = tls_acceptor
         .accept(client_socket)

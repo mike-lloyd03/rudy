@@ -19,7 +19,7 @@ async fn main() {
 }
 
 async fn main_loop(addr: &str) {
-    println!("HTTP Proxy runs at {}", addr);
+    println!("RITM is running at {}", addr);
     let mut listener = TcpListener::bind(addr).await.unwrap();
     loop {
         let (socket, _) = listener.accept().await.unwrap();

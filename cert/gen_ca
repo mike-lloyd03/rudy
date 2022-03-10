@@ -1,15 +1,18 @@
 #!/bin/bash
 
+if [ -f ca.crt ]; then
+  echo "CA certificate already exists. Running this program will overwrite it."
+  echo -n "Are you sure you want to do this? [y/N] "
+  read -r input
+  case $input in
+  y | Y | yes) ;;
+  *)
+    echo "Aborting."
+    exit 1
+    ;;
+  esac
+fi
+
 # Generate CA
 openssl genrsa -out ca.key 4096
 openssl req -x509 -new -sha512 -nodes -key ca.key -days 7307 -out ca.crt -config config/ca.conf
-
-# Generate CSR
-openssl genrsa -out host.key 4096
-openssl req -new -sha512 -nodes -key host.key -out host.csr -config config/host.conf
-
-# Sign CSR with CA
-openssl x509 -req -sha512 -days 365 -in host.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out host.crt -extfile config/host-ext.conf
-
-# Convert Host Cert to pkcs12
-openssl pkcs12 -export -out keyStore.p12 -inkey host.key -in host.crt
