@@ -442,6 +442,8 @@ dependencies = [
  "bytes",
  "indoc",
  "native-tls",
+ "openssl",
+ "openssl-sys",
  "tokio",
  "tokio-native-tls",
  "url",
