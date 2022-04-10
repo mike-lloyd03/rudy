@@ -8,6 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_native_tls::TlsAcceptor;
 
+use crate::tls;
+
 type ChunkedBuffer = [u8; 4096];
 
 /// Send the request to its destination and return the response it received.
@@ -99,7 +101,11 @@ where
 }
 
 /// connect request: HTTPS requests
-pub async fn do_connect_request(req: HTTPRequest, client_socket: &mut TcpStream) -> Option<String> {
+pub async fn do_connect_request(
+    req: HTTPRequest,
+    client_socket: &mut TcpStream,
+    root_ca: &tls::RootCA,
+) -> Option<String> {
     // return 200 OK to get the real request
     client_socket
         .write(b"HTTP/1.1 200 OK\r\n\r\n")
@@ -107,8 +113,16 @@ pub async fn do_connect_request(req: HTTPRequest, client_socket: &mut TcpStream)
         .unwrap();
     println!("request: {:?}", req);
     // TLS acceptor initialization
-    let der = include_bytes!("keyStore.p12");
-    let cert = Identity::from_pkcs12(der, "").unwrap_or_else(|e| {
+    let mut host = String::from("");
+    for h in &req.headers {
+        if h.0 == "Host" {
+            host = h.1.clone();
+        }
+    }
+    let (cert, key) =
+        tls::gen_cert(&root_ca.cert, root_ca.key.as_ref(), vec![host.to_string()]).unwrap();
+    let der = tls::to_pkcs12(&cert, &key).unwrap();
+    let cert = Identity::from_pkcs12(&der, "").unwrap_or_else(|e| {
         eprintln!("{:?}", e);
         exit(1);
     });

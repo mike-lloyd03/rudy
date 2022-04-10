@@ -1,5 +1,5 @@
 [package]
-name = "ritm"
+name = "Rudy"
 version = "0.1.0"
 authors = ["Mike Lloyd <michael.lloyd03@github.com>"]
 edition = "2021"
@@ -15,3 +15,4 @@ indoc = "1.0"
 native-tls="0.2.4"
 openssl = "0.10.38"
 openssl-sys = "0.9.72"
+anyhow = "1.0.56"
