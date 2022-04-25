@@ -18,31 +18,30 @@ async fn main() {
     };
     let addr = format!("127.0.0.1:{}", port);
 
-    let ca_path = "cert/ca.pem";
-    let key_path = "cert/key.pem";
+    let ca_path: &str = "cert/ca.pem";
+    let key_path: &str = "cert/key.pem";
     if !Path::new(ca_path).exists() || !Path::new(key_path).exists() {
         println!("Generating CA. This will need to be added to your system/browser trust store for HTTPS requests to be accepted by your browser.");
         let (ca, key) = tls::gen_ca().unwrap();
-        tls::cert_to_pem(&ca, ca_path);
-        tls::key_to_pem(&key, key_path);
+        tls::cert_to_pem(&ca, ca_path).unwrap();
+        tls::key_to_pem(&key, key_path).unwrap();
     }
-    let root_ca = tls::RootCA::from_pem(ca_path, key_path);
 
-    main_loop(&addr, &root_ca).await;
+    main_loop(&addr).await;
 }
 
-async fn main_loop(addr: &str, root_ca: &tls::RootCA) {
+async fn main_loop(addr: &str) {
     println!("Rudy is running at {}", addr);
     let mut listener = TcpListener::bind(addr).await.unwrap();
     loop {
         let (socket, _) = listener.accept().await.unwrap();
         tokio::spawn(async move {
-            process(socket, &root_ca).await;
+            process(socket).await;
         });
     }
 }
 
-async fn process(mut socket: TcpStream, root_ca: &tls::RootCA) {
+async fn process(mut socket: TcpStream) {
     let http_request = utils::read_http_request(&mut socket).await.unwrap();
     if http_request.path.starts_with("http://") {
         let new_request = http_request.build_request_for_proxy();
@@ -52,7 +51,7 @@ async fn process(mut socket: TcpStream, root_ca: &tls::RootCA) {
         }
     } else if http_request.method == "CONNECT" {
         if let Some(_host) = http_request.get_header_value("Host") {
-            let ret = utils::do_connect_request(http_request, &mut socket, &root_ca).await;
+            let ret = utils::do_connect_request(http_request, &mut socket).await;
             match ret {
                 Some(addr) => {
                     println!("Forwarded {}", addr);

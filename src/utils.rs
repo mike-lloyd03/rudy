@@ -101,11 +101,8 @@ where
 }
 
 /// connect request: HTTPS requests
-pub async fn do_connect_request(
-    req: HTTPRequest,
-    client_socket: &mut TcpStream,
-    root_ca: &tls::RootCA,
-) -> Option<String> {
+pub async fn do_connect_request(req: HTTPRequest, client_socket: &mut TcpStream) -> Option<String> {
+    let root_ca: tls::RootCA = tls::RootCA::from_pem("cert/ca.pem", "cert/key.pem");
     // return 200 OK to get the real request
     client_socket
         .write(b"HTTP/1.1 200 OK\r\n\r\n")
@@ -119,8 +116,8 @@ pub async fn do_connect_request(
             host = h.1.clone();
         }
     }
-    let (cert, key) =
-        tls::gen_cert(&root_ca.cert, root_ca.key.as_ref(), vec![host.to_string()]).unwrap();
+    let common_name = &host.split(':').next().unwrap();
+    let (cert, key) = tls::gen_cert(&root_ca.cert, root_ca.key.as_ref(), common_name).unwrap();
     let der = tls::to_pkcs12(&cert, &key).unwrap();
     let cert = Identity::from_pkcs12(&der, "").unwrap_or_else(|e| {
         eprintln!("{:?}", e);

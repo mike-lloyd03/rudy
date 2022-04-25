@@ -66,11 +66,11 @@ pub fn gen_ca() -> Result<(X509, PKey<Private>)> {
     Ok((cert, key_pair))
 }
 
-fn gen_csr(key_pair: &PKey<Private>) -> Result<x509::X509Req> {
+fn gen_csr(cn: &str, key_pair: &PKey<Private>) -> Result<x509::X509Req> {
     let mut req_builder = x509::X509ReqBuilder::new()?;
     req_builder.set_pubkey(key_pair)?;
 
-    let x509_name = subject_name("US", "CA", "RIV", "Rudy", "test")?;
+    let x509_name = common_name(cn)?;
     req_builder.set_subject_name(&x509_name)?;
 
     req_builder.sign(key_pair, MessageDigest::sha256())?;
@@ -81,12 +81,12 @@ fn gen_csr(key_pair: &PKey<Private>) -> Result<x509::X509Req> {
 pub fn gen_cert(
     ca_cert: &x509::X509Ref,
     ca_key_pair: &PKeyRef<Private>,
-    dns_names: Vec<String>,
+    common_name: &str,
 ) -> Result<(X509, PKey<Private>)> {
     let rsa = Rsa::generate(2048)?;
     let key_pair = PKey::from_rsa(rsa)?;
 
-    let req = gen_csr(&key_pair)?;
+    let req = gen_csr(common_name, &key_pair)?;
 
     let mut cert_builder = X509::builder()?;
     cert_builder.set_version(2)?;
@@ -126,9 +126,7 @@ pub fn gen_cert(
     cert_builder.append_extension(auth_key_identifier)?;
 
     let mut subject_alt_name = extension::SubjectAlternativeName::new();
-    for name in dns_names {
-        subject_alt_name.dns(&name);
-    }
+    subject_alt_name.dns(&common_name);
     let san = subject_alt_name.build(&cert_builder.x509v3_context(Some(ca_cert), None))?;
     cert_builder.append_extension(san)?;
 
@@ -183,6 +181,12 @@ fn subject_name(c: &str, st: &str, l: &str, o: &str, cn: &str) -> Result<x509::X
     subj_name_builder.append_entry_by_text("ST", st)?;
     subj_name_builder.append_entry_by_text("L", l)?;
     subj_name_builder.append_entry_by_text("O", o)?;
+    subj_name_builder.append_entry_by_text("CN", cn)?;
+    Ok(subj_name_builder.build())
+}
+
+fn common_name(cn: &str) -> Result<x509::X509Name> {
+    let mut subj_name_builder = x509::X509NameBuilder::new()?;
     subj_name_builder.append_entry_by_text("CN", cn)?;
     Ok(subj_name_builder.build())
 }
