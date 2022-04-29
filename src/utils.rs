@@ -117,7 +117,7 @@ pub async fn do_connect_request(req: HTTPRequest, client_socket: &mut TcpStream)
         }
     }
     let common_name = &host.split(':').next().unwrap();
-    let (cert, key) = tls::gen_cert(&root_ca.cert, root_ca.key.as_ref(), common_name).unwrap();
+    let (cert, key) = tls::gen_cert(&root_ca, common_name).unwrap();
     let der = tls::to_pkcs12(&cert, &key).unwrap();
     let cert = Identity::from_pkcs12(&der, "").unwrap_or_else(|e| {
         eprintln!("{:?}", e);

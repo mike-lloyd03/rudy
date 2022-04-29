@@ -8,6 +8,9 @@ mod tls;
 mod utils;
 use response::HTTPResponse;
 
+const CA_PATH: &str = "cert/ca.pem";
+const KEY_PATH: &str = "cert/key.pem";
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,13 +21,11 @@ async fn main() {
     };
     let addr = format!("127.0.0.1:{}", port);
 
-    let ca_path: &str = "cert/ca.pem";
-    let key_path: &str = "cert/key.pem";
-    if !Path::new(ca_path).exists() || !Path::new(key_path).exists() {
+    if !Path::new(CA_PATH).exists() || !Path::new(KEY_PATH).exists() {
         println!("Generating CA. This will need to be added to your system/browser trust store for HTTPS requests to be accepted by your browser.");
         let (ca, key) = tls::gen_ca().unwrap();
-        tls::cert_to_pem(&ca, ca_path).unwrap();
-        tls::key_to_pem(&key, key_path).unwrap();
+        tls::cert_to_pem(&ca, CA_PATH).unwrap();
+        tls::key_to_pem(&key, KEY_PATH).unwrap();
     }
 
     main_loop(&addr).await;
@@ -33,15 +34,18 @@ async fn main() {
 async fn main_loop(addr: &str) {
     println!("Rudy is running at {}", addr);
     let mut listener = TcpListener::bind(addr).await.unwrap();
+    let mut cert_cache: tls::CertCache =
+        tls::CertCache::new(tls::RootCA::from_pem(CA_PATH, KEY_PATH));
+
     loop {
         let (socket, _) = listener.accept().await.unwrap();
         tokio::spawn(async move {
-            process(socket).await;
+            process(socket, &mut cert_cache).await;
         });
     }
 }
 
-async fn process(mut socket: TcpStream) {
+async fn process(mut socket: TcpStream, cert_cache: &mut tls::CertCache) {
     let http_request = utils::read_http_request(&mut socket).await.unwrap();
     if http_request.path.starts_with("http://") {
         let new_request = http_request.build_request_for_proxy();

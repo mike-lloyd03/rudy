@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{read, File};
 use std::os::unix::prelude::FileExt;
 
@@ -25,11 +26,39 @@ impl RootCA {
     }
 }
 
+pub struct CertCache {
+    root_ca: RootCA,
+    cache: HashMap<String, Vec<u8>>,
+}
+
+impl CertCache {
+    /// Create a new cert cache for rapidly looking up certificates by their hostname or
+    /// generating new ones
+    pub fn new(root_ca: RootCA) -> Self {
+        let cache: HashMap<String, Vec<u8>> = HashMap::new();
+        Self { root_ca, cache }
+    }
+
+    /// Gets a certificate from the cache. If the cert is not found, it will generate it and
+    /// add it to the cache.
+    pub fn get_cert(&mut self, host: String) -> Result<Vec<u8>> {
+        match self.cache.get(&host) {
+            Some(cert) => Ok(cert.to_vec()),
+            None => {
+                let (cert, key) = gen_cert(&self.root_ca, &host)?;
+                let der = to_pkcs12(&cert, &key)?;
+                self.cache.insert(host, der.clone());
+                Ok(der)
+            }
+        }
+    }
+}
+
 pub fn gen_ca() -> Result<(X509, PKey<Private>)> {
     let rsa = Rsa::generate(2048)?;
     let key_pair = PKey::from_rsa(rsa)?;
 
-    let x509_name = subject_name("US", "CA", "RIV", "Rudy", "test")?;
+    let x509_name = subject_name("Rudy", "Rudy", "Rudy", "Rudy", "Rudy")?;
 
     let mut cert_builder = X509::builder()?;
     cert_builder.set_version(2)?;
@@ -43,7 +72,7 @@ pub fn gen_ca() -> Result<(X509, PKey<Private>)> {
     cert_builder.set_issuer_name(&x509_name)?;
     cert_builder.set_pubkey(&key_pair)?;
 
-    let days = days(365)?;
+    let days = days(3650)?;
     cert_builder.set_not_before(&days.0)?;
     cert_builder.set_not_after(&days.1)?;
 
@@ -78,11 +107,8 @@ fn gen_csr(cn: &str, key_pair: &PKey<Private>) -> Result<x509::X509Req> {
     Ok(req)
 }
 
-pub fn gen_cert(
-    ca_cert: &x509::X509Ref,
-    ca_key_pair: &PKeyRef<Private>,
-    common_name: &str,
-) -> Result<(X509, PKey<Private>)> {
+/// Creates an x509 cert for a given `common_name` signed by the given root CA.
+pub fn gen_cert(root_ca: &RootCA, common_name: &str) -> Result<(X509, PKey<Private>)> {
     let rsa = Rsa::generate(2048)?;
     let key_pair = PKey::from_rsa(rsa)?;
 
@@ -97,7 +123,7 @@ pub fn gen_cert(
     };
     cert_builder.set_serial_number(&serial_number)?;
     cert_builder.set_subject_name(req.subject_name())?;
-    cert_builder.set_issuer_name(ca_cert.subject_name())?;
+    cert_builder.set_issuer_name(root_ca.cert.subject_name())?;
     cert_builder.set_pubkey(&key_pair)?;
     let not_before = Asn1Time::days_from_now(0)?;
     cert_builder.set_not_before(&not_before)?;
@@ -116,21 +142,21 @@ pub fn gen_cert(
     )?;
 
     let subject_key_identifier = extension::SubjectKeyIdentifier::new()
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))?;
+        .build(&cert_builder.x509v3_context(Some(&root_ca.cert), None))?;
     cert_builder.append_extension(subject_key_identifier)?;
 
     let auth_key_identifier = extension::AuthorityKeyIdentifier::new()
         .keyid(false)
         .issuer(false)
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))?;
+        .build(&cert_builder.x509v3_context(Some(&root_ca.cert), None))?;
     cert_builder.append_extension(auth_key_identifier)?;
 
     let mut subject_alt_name = extension::SubjectAlternativeName::new();
     subject_alt_name.dns(&common_name);
-    let san = subject_alt_name.build(&cert_builder.x509v3_context(Some(ca_cert), None))?;
+    let san = subject_alt_name.build(&cert_builder.x509v3_context(Some(&root_ca.cert), None))?;
     cert_builder.append_extension(san)?;
 
-    cert_builder.sign(ca_key_pair, MessageDigest::sha256())?;
+    cert_builder.sign(&root_ca.key, MessageDigest::sha256())?;
     let cert = cert_builder.build();
 
     Ok((cert, key_pair))
