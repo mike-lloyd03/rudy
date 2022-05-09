@@ -1,79 +1,72 @@
-use std::env;
-use std::path::Path;
-use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
-mod request;
-mod response;
-mod tls;
-mod utils;
-use response::HTTPResponse;
+use actix_web::{
+    error, middleware,
+    web::{self, Data},
+    App, Error, HttpRequest, HttpResponse, HttpServer,
+};
+use awc::Client;
+use clap::Arg;
+use url::Url;
 
-const CA_PATH: &str = "cert/ca.pem";
-const KEY_PATH: &str = "cert/key.pem";
+async fn forward(
+    req: HttpRequest,
+    payload: web::Payload,
+    client: web::Data<Client>,
+) -> Result<HttpResponse, Error> {
+    let host = req.headers().get("host").unwrap().to_str().unwrap();
+    let mut new_url = Url::parse(&format!("http://{}", host)).unwrap();
+    new_url.set_path(req.uri().path());
+    new_url.set_query(req.uri().query());
+    println!("req: {:?}\nreq.uri: {:?}", req, req.uri().path());
 
-#[tokio::main]
-async fn main() {
-    let args: Vec<String> = env::args().collect();
-    let port = if args.len() == 1 {
-        8080
-    } else {
-        args.get(1).unwrap().parse::<i32>().unwrap()
+    // TODO: This forwarded implementation is incomplete as it only handles the inofficial
+    // X-Forwarded-For header but not the official Forwarded one.
+    let forwarded_req = client
+        .request_from(new_url.as_str(), req.head())
+        .no_decompress();
+    let forwarded_req = match req.head().peer_addr {
+        Some(addr) => forwarded_req.insert_header(("x-forwarded-for", format!("{}", addr.ip()))),
+        None => forwarded_req,
     };
-    let addr = format!("127.0.0.1:{}", port);
 
-    if !Path::new(CA_PATH).exists() || !Path::new(KEY_PATH).exists() {
-        println!("Generating CA. This will need to be added to your system/browser trust store for HTTPS requests to be accepted by your browser.");
-        let (ca, key) = tls::gen_ca().unwrap();
-        tls::cert_to_pem(&ca, CA_PATH).unwrap();
-        tls::key_to_pem(&key, KEY_PATH).unwrap();
+    let res = forwarded_req
+        .send_stream(payload)
+        .await
+        .map_err(error::ErrorInternalServerError)?;
+
+    let mut client_resp = HttpResponse::build(res.status());
+    // Remove `Connection` as per
+    // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Connection#Directives
+    for (header_name, header_value) in res.headers().iter().filter(|(h, _)| *h != "connection") {
+        client_resp.append_header((header_name.clone(), header_value.clone()));
     }
 
-    main_loop(&addr).await;
+    Ok(client_resp.streaming(res))
 }
 
-async fn main_loop(addr: &str) {
-    println!("Rudy is running at {}", addr);
-    let mut listener = TcpListener::bind(addr).await.unwrap();
-    let mut cert_cache: tls::CertCache =
-        tls::CertCache::new(tls::RootCA::from_pem(CA_PATH, KEY_PATH));
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let matches = clap::Command::new("HTTP Proxy")
+        .arg(
+            Arg::new("listen_port")
+                .takes_value(true)
+                .value_name("LISTEN PORT")
+                .index(1)
+                .required(false),
+        )
+        .get_matches();
 
-    loop {
-        let (socket, _) = listener.accept().await.unwrap();
-        tokio::spawn(async move {
-            process(socket, &mut cert_cache).await;
-        });
-    }
-}
+    let listen_addr = "127.0.0.1";
+    let listen_port = matches.value_of_t("listen_port").unwrap_or(8080);
+    println!("Listening on {}:{}", listen_addr, listen_port);
 
-async fn process(mut socket: TcpStream, cert_cache: &mut tls::CertCache) {
-    let http_request = utils::read_http_request(&mut socket).await.unwrap();
-    if http_request.path.starts_with("http://") {
-        let new_request = http_request.build_request_for_proxy();
-        if let Some(resp) = utils::do_request(new_request).await {
-            socket.write(&resp.build_message()).await.unwrap();
-            println!("Forwarded {}", http_request.path);
-        }
-    } else if http_request.method == "CONNECT" {
-        if let Some(_host) = http_request.get_header_value("Host") {
-            let ret = utils::do_connect_request(http_request, &mut socket).await;
-            match ret {
-                Some(addr) => {
-                    println!("Forwarded {}", addr);
-                }
-                None => {
-                    println!("An unknown HTTPS request");
-                }
-            }
-        }
-    } else {
-        println!("Unknown request: {:?}", http_request);
-        send_501_error(&mut socket).await;
-    }
-}
-
-async fn send_501_error(socket: &mut TcpStream) {
-    let http_response_content = HTTPResponse::create_501_error().build_message();
-    if let Err(err) = socket.write(&http_response_content).await {
-        panic!("{}", err);
-    }
+    HttpServer::new(move || {
+        App::new()
+            .app_data(Data::new(Client::new()))
+            .wrap(middleware::Logger::default())
+            .default_service(web::route().to(forward))
+    })
+    .bind((listen_addr, listen_port))?
+    .system_exit()
+    .run()
+    .await
 }
