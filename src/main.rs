@@ -1,72 +1,83 @@
-use actix_web::{
-    error, middleware,
-    web::{self, Data},
-    App, Error, HttpRequest, HttpResponse, HttpServer,
+use hudsucker::{
+    async_trait::async_trait,
+    certificate_authority::RcgenAuthority,
+    hyper::{Body, Request, Response},
+    *,
 };
-use awc::Client;
-use clap::Arg;
-use url::Url;
+use rustls_pemfile as pemfile;
+use std::net::SocketAddr;
+use tracing::*;
+use tungstenite::protocol::WebSocketContext;
+use tungstenite::Message;
 
-async fn forward(
-    req: HttpRequest,
-    payload: web::Payload,
-    client: web::Data<Client>,
-) -> Result<HttpResponse, Error> {
-    let host = req.headers().get("host").unwrap().to_str().unwrap();
-    let mut new_url = Url::parse(&format!("http://{}", host)).unwrap();
-    new_url.set_path(req.uri().path());
-    new_url.set_query(req.uri().query());
-    println!("req: {:?}\nreq.uri: {:?}", req, req.uri().path());
-
-    // TODO: This forwarded implementation is incomplete as it only handles the inofficial
-    // X-Forwarded-For header but not the official Forwarded one.
-    let forwarded_req = client
-        .request_from(new_url.as_str(), req.head())
-        .no_decompress();
-    let forwarded_req = match req.head().peer_addr {
-        Some(addr) => forwarded_req.insert_header(("x-forwarded-for", format!("{}", addr.ip()))),
-        None => forwarded_req,
-    };
-
-    let res = forwarded_req
-        .send_stream(payload)
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
         .await
-        .map_err(error::ErrorInternalServerError)?;
-
-    let mut client_resp = HttpResponse::build(res.status());
-    // Remove `Connection` as per
-    // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Connection#Directives
-    for (header_name, header_value) in res.headers().iter().filter(|(h, _)| *h != "connection") {
-        client_resp.append_header((header_name.clone(), header_value.clone()));
-    }
-
-    Ok(client_resp.streaming(res))
+        .expect("Failed to install CTRL+C signal handler");
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let matches = clap::Command::new("HTTP Proxy")
-        .arg(
-            Arg::new("listen_port")
-                .takes_value(true)
-                .value_name("LISTEN PORT")
-                .index(1)
-                .required(false),
-        )
-        .get_matches();
+#[derive(Clone)]
+struct LogHandler;
 
-    let listen_addr = "127.0.0.1";
-    let listen_port = matches.value_of_t("listen_port").unwrap_or(8080);
-    println!("Listening on {}:{}", listen_addr, listen_port);
+#[async_trait]
+impl HttpHandler for LogHandler {
+    async fn handle_request(
+        &mut self,
+        _ctx: &HttpContext,
+        req: Request<Body>,
+    ) -> RequestOrResponse {
+        println!("{:?} {:?}", req.method(), req.uri());
+        println!("{:?}", req.body());
+        println!();
+        RequestOrResponse::Request(req)
+    }
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(Data::new(Client::new()))
-            .wrap(middleware::Logger::default())
-            .default_service(web::route().to(forward))
-    })
-    .bind((listen_addr, listen_port))?
-    .system_exit()
-    .run()
-    .await
+    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
+        // println!("{:?}", res);
+        res
+    }
+}
+
+#[derive(Clone)]
+struct WsLogHandler;
+
+// #[async_trait]
+// impl WebSocketHandler for WsLogHandler {
+//     async fn handle_message(&mut self, _ctx: &WebSocketContext, msg: Message) -> Option<Message> {
+//         println!("{:?}", msg);
+//         Some(msg)
+//     }
+// }
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+
+    let mut private_key_bytes: &[u8] = include_bytes!("../ca/hudsucker.key");
+    let mut ca_cert_bytes: &[u8] = include_bytes!("../ca/hudsucker.cer");
+    let private_key = rustls::PrivateKey(
+        pemfile::pkcs8_private_keys(&mut private_key_bytes)
+            .expect("Failed to parse private key")
+            .remove(0),
+    );
+    let ca_cert = rustls::Certificate(
+        pemfile::certs(&mut ca_cert_bytes)
+            .expect("Failed to parse CA certificate")
+            .remove(0),
+    );
+
+    let ca = RcgenAuthority::new(private_key, ca_cert, 1_000)
+        .expect("Failed to create Certificate Authority");
+
+    let proxy = ProxyBuilder::new()
+        .with_addr(SocketAddr::from(([127, 0, 0, 1], 8080)))
+        .with_rustls_client()
+        .with_ca(ca)
+        .with_http_handler(LogHandler)
+        // .with_websocket_handler(WsLogHandler)
+        .build();
+
+    if let Err(e) = proxy.start(shutdown_signal()).await {
+        error!("{}", e);
+    }
 }

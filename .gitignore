@@ -1,4 +1,5 @@
 /target
+/ca
 *.crt
 *.key
 *.csr
