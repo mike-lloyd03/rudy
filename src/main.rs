@@ -7,8 +7,6 @@ use hudsucker::{
 use rustls_pemfile as pemfile;
 use std::net::SocketAddr;
 use tracing::*;
-use tungstenite::protocol::WebSocketContext;
-use tungstenite::Message;
 
 async fn shutdown_signal() {
     tokio::signal::ctrl_c()
@@ -26,10 +24,9 @@ impl HttpHandler for LogHandler {
         _ctx: &HttpContext,
         req: Request<Body>,
     ) -> RequestOrResponse {
-        println!("{:?} {:?}", req.method(), req.uri());
-        println!("{:?}", req.body());
-        println!();
-        RequestOrResponse::Request(req)
+        let d_req = decode_request(req).unwrap();
+        format_req(&d_req);
+        RequestOrResponse::Request(d_req)
     }
 
     async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
@@ -38,20 +35,18 @@ impl HttpHandler for LogHandler {
     }
 }
 
-#[derive(Clone)]
-struct WsLogHandler;
-
-// #[async_trait]
-// impl WebSocketHandler for WsLogHandler {
-//     async fn handle_message(&mut self, _ctx: &WebSocketContext, msg: Message) -> Option<Message> {
-//         println!("{:?}", msg);
-//         Some(msg)
-//     }
-// }
+fn format_req(req: &Request<Body>) {
+    println!("--------");
+    println!("{} {} {:?}", req.method(), req.uri(), req.version(),);
+    for h in req.headers() {
+        println!("{}: {:?}", h.0, h.1)
+    }
+}
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    let listen_port = 8080;
 
     let mut private_key_bytes: &[u8] = include_bytes!("../ca/hudsucker.key");
     let mut ca_cert_bytes: &[u8] = include_bytes!("../ca/hudsucker.cer");
@@ -70,12 +65,14 @@ async fn main() {
         .expect("Failed to create Certificate Authority");
 
     let proxy = ProxyBuilder::new()
-        .with_addr(SocketAddr::from(([127, 0, 0, 1], 8080)))
+        .with_addr(SocketAddr::from(([127, 0, 0, 1], listen_port)))
         .with_rustls_client()
         .with_ca(ca)
         .with_http_handler(LogHandler)
         // .with_websocket_handler(WsLogHandler)
         .build();
+
+    println!("Now listening on 127.0.0.1:{}", listen_port);
 
     if let Err(e) = proxy.start(shutdown_signal()).await {
         error!("{}", e);
