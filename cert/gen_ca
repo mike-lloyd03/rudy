@@ -1,7 +1,14 @@
 #!/bin/bash
 
+CN=RUDY
+C=US
+ST=California
+L=Riverside
+O=Rudy
+SUBJ="/CN=$CN/C=$C/ST=$ST/L=$L/O=$O"
+
 if [ -f ca.crt ]; then
-  echo "CA certificate already exists. Running this program will overwrite it."
+  echo "CA certificate already exists. Running this script will overwrite it."
   echo -n "Are you sure you want to do this? [y/N] "
   read -r input
   case $input in
@@ -14,5 +21,5 @@ if [ -f ca.crt ]; then
 fi
 
 # Generate CA
-openssl genrsa -out ca.key 4096
-openssl req -x509 -new -sha512 -nodes -key ca.key -days 7307 -out ca.crt -config config/ca.conf
+openssl genpkey -out ca.key -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+openssl req -x509 -new -nodes -key ca.key -sha256 -days 1826 -out ca.crt -subj $SUBJ

@@ -1,11 +1,12 @@
 use hudsucker::{
     async_trait::async_trait,
     certificate_authority::RcgenAuthority,
-    hyper::{Body, Request, Response},
+    hyper::{body::to_bytes, Body, Request, Response},
     *,
 };
 use rustls_pemfile as pemfile;
-use std::net::SocketAddr;
+use std::process::exit;
+use std::{net::SocketAddr, str};
 use tracing::*;
 
 async fn shutdown_signal() {
@@ -24,9 +25,7 @@ impl HttpHandler for LogHandler {
         _ctx: &HttpContext,
         req: Request<Body>,
     ) -> RequestOrResponse {
-        let d_req = decode_request(req).unwrap();
-        format_req(&d_req);
-        RequestOrResponse::Request(d_req)
+        RequestOrResponse::Request(format_req(req).await)
     }
 
     async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
@@ -35,28 +34,63 @@ impl HttpHandler for LogHandler {
     }
 }
 
-fn format_req(req: &Request<Body>) {
-    println!("--------");
-    println!("{} {} {:?}", req.method(), req.uri(), req.version(),);
-    for h in req.headers() {
-        println!("{}: {:?}", h.0, h.1)
+async fn format_req(req: Request<Body>) -> Request<Body> {
+    let new_req: Request<Body>;
+    let (parts, body) = req.into_parts();
+
+    let mut output = "----------\n".to_string();
+    output += &format!("{} {} {:?}\n", parts.method, parts.uri, parts.version);
+    for h in &parts.headers {
+        output += &format!("{}: {:?}\n", h.0, h.1)
     }
+
+    if parts.headers.contains_key("Content-Length")
+        || parts.headers.contains_key("Transfer-Encoding")
+    {
+        let body_bytes = to_bytes(body).await.unwrap();
+        output += "body:\n";
+        output += str::from_utf8(&body_bytes).unwrap();
+
+        let new_body = Body::from(body_bytes);
+        new_req = Request::from_parts(parts, new_body);
+    } else {
+        new_req = Request::from_parts(parts, body);
+    }
+
+    println!("{}", output);
+
+    new_req
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
     let listen_port = 8080;
+    let key_path = "cert/ca.key";
+    let cert_path = "cert/ca.crt";
 
-    let mut private_key_bytes: &[u8] = include_bytes!("../ca/hudsucker.key");
-    let mut ca_cert_bytes: &[u8] = include_bytes!("../ca/hudsucker.cer");
+    let private_key_bytes = match std::fs::read_to_string(key_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Unable to load key file at '{}'. {}", key_path, e);
+            exit(1)
+        }
+    };
+    let ca_cert_bytes = match std::fs::read_to_string(cert_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Unable to load cert file at '{}'. {}", cert_path, e);
+            exit(1)
+        }
+    };
+
     let private_key = rustls::PrivateKey(
-        pemfile::pkcs8_private_keys(&mut private_key_bytes)
+        pemfile::pkcs8_private_keys(&mut private_key_bytes.as_bytes())
             .expect("Failed to parse private key")
             .remove(0),
     );
     let ca_cert = rustls::Certificate(
-        pemfile::certs(&mut ca_cert_bytes)
+        pemfile::certs(&mut ca_cert_bytes.as_bytes())
             .expect("Failed to parse CA certificate")
             .remove(0),
     );
