@@ -62,20 +62,8 @@ async fn format_req(req: Request<Body>) -> Request<Body> {
     new_req
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-    let listen_port = 8080;
-    let key_path = "cert/ca.key";
-    let cert_path = "cert/ca.crt";
-
-    let private_key_bytes = match std::fs::read_to_string(key_path) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("Unable to load key file at '{}'. {}", key_path, e);
-            exit(1)
-        }
-    };
+/// Loads the certificate authority and private key for the proxy server.
+fn load_ca(cert_path: &str, key_path: &str) -> RcgenAuthority {
     let ca_cert_bytes = match std::fs::read_to_string(cert_path) {
         Ok(b) => b,
         Err(e) => {
@@ -84,26 +72,42 @@ async fn main() {
         }
     };
 
-    let private_key = rustls::PrivateKey(
-        pemfile::pkcs8_private_keys(&mut private_key_bytes.as_bytes())
-            .expect("Failed to parse private key")
-            .remove(0),
-    );
+    let private_key_bytes = match std::fs::read_to_string(key_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Unable to load key file at '{}'. {}", key_path, e);
+            exit(1)
+        }
+    };
+
     let ca_cert = rustls::Certificate(
         pemfile::certs(&mut ca_cert_bytes.as_bytes())
             .expect("Failed to parse CA certificate")
             .remove(0),
     );
 
-    let ca = RcgenAuthority::new(private_key, ca_cert, 1_000)
-        .expect("Failed to create Certificate Authority");
+    let private_key = rustls::PrivateKey(
+        pemfile::pkcs8_private_keys(&mut private_key_bytes.as_bytes())
+            .expect("Failed to parse private key")
+            .remove(0),
+    );
+
+    RcgenAuthority::new(private_key, ca_cert, 1_000)
+        .expect("Failed to create Certificate Authority")
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
+    let listen_port = 8080;
+
+    let ca = load_ca("cert/ca.crt", "cert/ca.key");
 
     let proxy = ProxyBuilder::new()
         .with_addr(SocketAddr::from(([127, 0, 0, 1], listen_port)))
         .with_rustls_client()
         .with_ca(ca)
         .with_http_handler(LogHandler)
-        // .with_websocket_handler(WsLogHandler)
         .build();
 
     println!("Now listening on 127.0.0.1:{}", listen_port);
