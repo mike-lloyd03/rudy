@@ -6,10 +6,10 @@ use crossterm::{
 use std::{error::Error, io};
 use tui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Spans},
-    widgets::{Block, Borders, Cell, Row, Table, Tabs},
+    widgets::{Block, Borders, Paragraph, Row, Table, TableState, Tabs},
     Frame, Terminal,
 };
 
@@ -19,6 +19,7 @@ struct Req {
     method: &'static str,
     url: &'static str,
     status: usize,
+    headers: Vec<&'static str>,
 }
 
 impl Req {
@@ -31,12 +32,23 @@ impl Req {
             self.status.to_string(),
         ])
     }
+
+    fn to_paragraph(&self) -> Paragraph<'static> {
+        let mut p = format!("{} {}\n", self.method, self.url);
+        p += &format!("Host: {}\n", self.host);
+        for h in &self.headers {
+            p += &format!("{}\n", h)
+        }
+
+        Paragraph::new(p)
+    }
 }
 
 struct App<'a> {
     pub titles: Vec<&'a str>,
     pub index: usize,
     pub history: Vec<Req>,
+    pub history_state: TableState,
 }
 
 impl<'a> App<'a> {
@@ -51,6 +63,10 @@ impl<'a> App<'a> {
                     method: "GET",
                     url: "/",
                     status: 200,
+                    headers: vec![
+                        "Accept-Language: en-US",
+                        "Accept-Encoding: gzip, deflate"
+                    ]
                 },
                 Req {
                     id: 1,
@@ -58,6 +74,10 @@ impl<'a> App<'a> {
                     method: "GET",
                     url: "/thing",
                     status: 404,
+                    headers: vec![
+                        "Accept-Language: en-US",
+                        "User-Agent: Rust"
+                    ]
                 },
                 Req {
                     id: 2,
@@ -65,6 +85,12 @@ impl<'a> App<'a> {
                     method: "POST",
                     url: "/get_item?id=1&name=thisisareallylongname&date=2023/01/23&reallylongkey=withshortvalue",
                     status: 200,
+                    headers: vec![
+                        "Accept-Language: en-US",
+                        "Accept-Encoding: gzip, deflate",
+                        "Content-Type: application/x-www-form-urlencoded; charset=UTF-8",
+                        "Content-Length: 236"
+                    ]
                 },
                 Req {
                     id: 3,
@@ -72,16 +98,21 @@ impl<'a> App<'a> {
                     method: "GET",
                     url: "/",
                     status: 300,
+                    headers: vec![
+                        "Accept-Language: en-US",
+                        "Accept-Encoding: gzip, deflate",
+                    ]
                 },
             ],
+            history_state: TableState::default(),
         }
     }
 
-    pub fn next(&mut self) {
+    pub fn next_tab(&mut self) {
         self.index = (self.index + 1) % self.titles.len();
     }
 
-    pub fn previous(&mut self) {
+    pub fn previous_tab(&mut self) {
         if self.index > 0 {
             self.index -= 1;
         } else {
@@ -91,6 +122,34 @@ impl<'a> App<'a> {
 
     pub fn go_to_tab(&mut self, index: usize) {
         self.index = index;
+    }
+
+    pub fn next_hist_item(&mut self) {
+        let i = match self.history_state.selected() {
+            Some(i) => {
+                if i >= self.history.len() - 1 {
+                    i
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.history_state.select(Some(i));
+    }
+
+    pub fn prev_hist_item(&mut self) {
+        let i = match self.history_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    0
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.history_state.select(Some(i));
     }
 }
 
@@ -124,23 +183,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         if let Event::Key(key) = event::read()? {
             match key.code {
                 KeyCode::Char('q') => return Ok(()),
-                KeyCode::Tab => app.next(),
-                KeyCode::BackTab => app.previous(),
+                KeyCode::Tab => app.next_tab(),
+                KeyCode::BackTab => app.previous_tab(),
                 KeyCode::Char('i') => app.go_to_tab(0),
                 KeyCode::Char('h') => app.go_to_tab(1),
                 KeyCode::Char('s') => app.go_to_tab(2),
+                KeyCode::Char('j') => app.next_hist_item(),
+                KeyCode::Char('k') => app.prev_hist_item(),
                 _ => {}
             }
         }
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let size = f.size();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -178,7 +239,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
             Block::default().title("Inner 0").borders(Borders::ALL),
             chunks[1],
         ),
-        1 => f.render_widget(render_history(app), chunks[1]),
+        1 => render_history(f, app, chunks[1]),
         2 => f.render_widget(
             Block::default().title("Inner 2").borders(Borders::ALL),
             chunks[1],
@@ -187,9 +248,23 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     };
 }
 
-fn render_history(app: &App) -> Table<'static> {
+fn render_history<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
+    // Outer block
+    let block = Block::default()
+        .title("History")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL);
+    f.render_widget(block, area);
+
+    let h_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([Constraint::Min(10), Constraint::Min(40)].as_ref())
+        .split(area);
+
+    // History list view
     let rows: Vec<Row> = app.history.iter().map(|r| r.to_row()).collect();
-    Table::new(rows)
+    let table = Table::new(rows)
         .style(Style::default().fg(Color::White))
         .header(
             Row::new(vec!["ID", "Host", "Method", "URL", "Status"])
@@ -202,7 +277,24 @@ fn render_history(app: &App) -> Table<'static> {
             Constraint::Min(40),
             Constraint::Min(10),
         ])
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-        .highlight_symbol(">> ")
-        .block(Block::default().title("History").borders(Borders::ALL))
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Green)
+                .bg(Color::Gray),
+        );
+    f.render_stateful_widget(table, h_chunks[0], &mut app.history_state);
+
+    // History detail view
+    let detail = match app.history_state.selected() {
+        Some(i) => app.history[i].to_paragraph(),
+        None => Paragraph::new(""),
+    }
+    .block(
+        Block::default()
+            .title("Request")
+            .title_alignment(Alignment::Center)
+            .borders(Borders::TOP),
+    );
+    f.render_widget(detail, h_chunks[1]);
 }
